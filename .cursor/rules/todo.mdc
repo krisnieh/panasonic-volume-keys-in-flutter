@@ -1,0 +1,8 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+1. 这是刚才位于 lily 的项目，因为你显著的成果，我将其独立出来。
+2. 编译 go-bridge 内容，并将其以可靠的方式加入系统启动执行；同时审查一下go代码，让其合理地作为一个系统服务
+3. 将启动go bridge服务作为 install 的任务之一，一次性安装

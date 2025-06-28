@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -28,12 +32,20 @@ var clients = make(map[*websocket.Conn]bool)
 var broadcast = make(chan VolumeEvent)
 
 func main() {
+	// 设置日志格式
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	
 	fmt.Println("🚀 启动Panasonic FZ-G1音量键桥接服务")
 	fmt.Println("=====================================")
+	log.Println("服务启动中...")
 
 	// 启动音量键监听服务
 	volumeService := NewVolumeService("/var/log/panasonic-volume-keys.log")
-	go volumeService.Start(broadcast)
+	go func() {
+		if err := volumeService.Start(broadcast); err != nil {
+			log.Fatalf("音量键服务启动失败: %v", err)
+		}
+	}()
 
 	// 启动WebSocket广播处理
 	go handleBroadcast()
@@ -43,12 +55,56 @@ func main() {
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/", handleHome)
 
+	// 创建HTTP服务器
 	port := ":8080"
-	fmt.Printf("🌐 服务已启动，监听端口: %s\n", port)
-	fmt.Printf("📱 Flutter连接地址: ws://localhost%s/ws\n", port)
-	fmt.Printf("🏥 健康检查: http://localhost%s/health\n", port)
+	server := &http.Server{
+		Addr:         port,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 
-	log.Fatal(http.ListenAndServe(port, nil))
+	// 启动服务器
+	go func() {
+		fmt.Printf("🌐 服务已启动，监听端口: %s\n", port)
+		fmt.Printf("📱 Flutter连接地址: ws://localhost%s/ws\n", port)
+		fmt.Printf("🏥 健康检查: http://localhost%s/health\n", port)
+		log.Printf("HTTP服务器启动在端口%s", port)
+		
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP服务器启动失败: %v", err)
+		}
+	}()
+
+	// 等待中断信号以优雅地关闭服务器
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	
+	log.Println("收到退出信号，开始优雅关闭...")
+	fmt.Println("🛑 服务正在关闭...")
+
+	// 创建关闭上下文，30秒超时
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 关闭音量键服务
+	if err := volumeService.Stop(); err != nil {
+		log.Printf("关闭音量键服务失败: %v", err)
+	}
+
+	// 关闭所有WebSocket连接
+	for client := range clients {
+		client.Close()
+	}
+
+	// 关闭HTTP服务器
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("HTTP服务器关闭失败: %v", err)
+	}
+
+	log.Println("服务已关闭")
+	fmt.Println("✅ 服务已安全关闭")
 }
 
 // handleWebSocket 处理WebSocket连接
